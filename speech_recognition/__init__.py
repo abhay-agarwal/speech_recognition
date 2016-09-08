@@ -701,6 +701,9 @@ class Recognizer(AudioSource):
         except Exception as e:
             raise RequestError("recognition connection failed")
 
+        if "results" not in response:
+            return ""
+
         actual_result = response["results"][0]
 
         # return results
