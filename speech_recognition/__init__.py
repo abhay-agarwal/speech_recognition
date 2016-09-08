@@ -10,7 +10,10 @@ import io, os, subprocess, wave, aifc, math, audioop
 import collections, threading
 import platform, stat
 import json, hashlib, hmac, time, base64, random, uuid
-import tempfile, shutil
+import tempfile, shutil, base64
+
+from googleapiclient import discovery
+from googleapiclient import errors
 
 try: # attempt to use the Python 2 modules
     from urllib import urlencode
@@ -399,6 +402,7 @@ class Recognizer(AudioSource):
         self.pause_threshold = 0.8 # seconds of non-speaking audio before a phrase is considered complete
         self.phrase_threshold = 0.3 # minimum seconds of speaking audio before we consider the speaking audio a phrase - values below this are ignored (for filtering out clicks and pops)
         self.non_speaking_duration = 0.5 # seconds of non-speaking audio to keep on both sides of the recording
+        self.google_service = None
 
     def record(self, source, duration = None, offset = None):
         """
@@ -652,43 +656,57 @@ class Recognizer(AudioSource):
         Raises a ``speech_recognition.UnknownValueError`` exception if the speech is unintelligible. Raises a ``speech_recognition.RequestError`` exception if the speech recognition operation failed, if the key isn't valid, or if there is no internet connection.
         """
         assert isinstance(audio_data, AudioData), "`audio_data` must be audio data"
-        assert key is None or isinstance(key, str), "`key` must be `None` or a string"
+        assert isinstance(key, str), "`key` must be `None` or a string"
         assert isinstance(language, str), "`language` must be a string"
+
+        if self.google_service is None:
+            self.google_service = discovery.build(
+                'speech', 'v1beta1', developerKey=key,
+                discoveryServiceUrl="https://{api}.googleapis.com/$discovery/rest?version={apiVersion}")
 
         flac_data = audio_data.get_flac_data(
             convert_rate = None if audio_data.sample_rate >= 8000 else 8000, # audio samples must be at least 8 kHz
             convert_width = 2 # audio samples must be 16-bit
         )
-        if key is None: key = "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"
-        url = "http://www.google.com/speech-api/v2/recognize?{0}".format(urlencode({
-            "client": "chromium",
-            "lang": language,
-            "key": key,
-        }))
-        request = Request(url, data = flac_data, headers = {"Content-Type": "audio/x-flac; rate={0}".format(audio_data.sample_rate)})
-
+        data = {
+            "config": {
+                "encoding": "FLAC",
+                "sampleRate": audio_data.sample_rate,
+                "languageCode": language
+            },
+            "audio": {
+                "content": base64.b64encode(flac_data).decode('UTF-8')
+            }
+        }
+        service_request = self.google_service.speech().syncrecognize(
+            body={
+                "config": {
+                    "encoding": "FLAC",
+                    "sampleRate": audio_data.sample_rate,
+                    "languageCode": language
+                },
+                "audio": {
+                    "content": base64.b64encode(flac_data).decode('UTF-8')
+                }
+            })
         # obtain audio transcription results
         try:
-            response = urlopen(request)
-        except HTTPError as e:
-            raise RequestError("recognition request failed: {0}".format(getattr(e, "reason", "status {0}".format(e.code)))) # use getattr to be compatible with Python 2.6
-        except URLError as e:
+            response = service_request.execute()
+        except errors.HttpError as e:
+            raise RequestError("recognition request failed: {0}".format(getattr(e, "reason", "status {0}".format(e.code))))
+        except KeyError as e:
             raise RequestError("recognition connection failed: {0}".format(e.reason))
-        response_text = response.read().decode("utf-8")
+        except httplib2.ServerNotFoundError as e:
+            raise RequestError("recognition connection failed: {0}".format(e.reason))
+        except Exception as e:
+            raise RequestError("recognition connection failed")
 
-        # ignore any blank blocks
-        actual_result = []
-        for line in response_text.split("\n"):
-            if not line: continue
-            result = json.loads(line)["result"]
-            if len(result) != 0:
-                actual_result = result[0]
-                break
+        actual_result = response["results"][0]
 
         # return results
         if show_all: return actual_result
-        if "alternative" not in actual_result: raise UnknownValueError()
-        for entry in actual_result["alternative"]:
+        if "alternatives" not in actual_result: raise UnknownValueError()
+        for entry in actual_result["alternatives"]:
             if "transcript" in entry:
                 return entry["transcript"]
         raise UnknownValueError() # no transcriptions available
