@@ -555,7 +555,7 @@ class Recognizer(AudioSource):
             with source as s:
                 while running[0]:
                     try: # listen for 1 second, then check again if the stop function has been called
-                        audio = self.listen(s, 1)
+                        audio = self.listen(s, 0.5)
                     except WaitTimeoutError: # listening timed out, just try again
                         pass
                     else:
@@ -695,8 +695,6 @@ class Recognizer(AudioSource):
         except errors.HttpError as e:
             raise RequestError("recognition request failed: {0}".format(getattr(e, "reason", "status {0}".format(e.code))))
         except KeyError as e:
-            raise RequestError("recognition connection failed: {0}".format(e.reason))
-        except httplib2.ServerNotFoundError as e:
             raise RequestError("recognition connection failed: {0}".format(e.reason))
         except Exception as e:
             raise RequestError("recognition connection failed")
